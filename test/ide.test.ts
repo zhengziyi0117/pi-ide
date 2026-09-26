@@ -3,7 +3,18 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { findLock, formatSelection, type IdeLock, listLocks, mentionText } from "../extensions/ide.ts";
+import {
+	ancestorPids,
+	formatDiagnostics,
+	formatSelection,
+	type IdeLock,
+	listLocks,
+	mentionText,
+	newDiagnostics,
+	parseDiagnostics,
+	pickLock,
+	uriToPath,
+} from "../extensions/ide.ts";
 
 const lock = (port: number, ...workspaceFolders: string[]): IdeLock => ({ port, workspaceFolders, ideName: `ide${port}` });
 
@@ -23,11 +34,15 @@ test("listLocks: reads ws locks, drops dead pids, junk and non-ws", () => {
 	}
 });
 
-test("findLock: only the IDE terminal's CLAUDE_CODE_SSE_PORT auto-connects", () => {
-	const locks = [lock(1, "/work"), lock(3, "/other")];
-	assert.equal(findLock(locks, "3")?.port, 3);
-	assert.equal(findLock(locks, "999"), undefined); // stale port: no guessing
-	assert.equal(findLock(locks, undefined), undefined); // plain terminal: use /ide
+test("pickLock: SSE_PORT, else the one ancestor IDE whose workspace contains cwd (like CC)", () => {
+	const l = (port: number, pid: number, folder: string): IdeLock => ({ ...lock(port, folder), pid });
+	const idea = 100;
+	const locks = [l(1, idea, "/work/app"), l(2, idea, "/work/other"), l(3, 200, "/work/app")];
+	assert.equal(pickLock(locks, "2", "/work/app", new Set())?.port, 2); // env wins
+	assert.equal(pickLock(locks, undefined, "/work/app/src", new Set([idea]))?.port, 1); // new workspace: no env
+	assert.equal(pickLock(locks, "999", "/work/app/src", new Set([idea]))?.port, 1); // stale env falls back
+	assert.equal(pickLock(locks, undefined, "/work/app", new Set()), undefined); // plain terminal: use /ide
+	assert.equal(pickLock(locks, undefined, "/work/app", new Set([idea, 200])), undefined); // ambiguous: don't guess
 });
 
 test("listLocks: windows containing cwd sort first (for /ide)", () => {
@@ -83,19 +98,51 @@ test("mentionText: 0-based IDE lines -> @path#L", () => {
 	assert.equal(mentionText({ filePath: "/p/a.ts" }, "/p"), "@a.ts ");
 });
 
-test("IdeEditor: chip at the start of the top border, yields while busy", async () => {
+test("IdeEditor: chip at the start of the top border, yields while busy, Esc dismisses", async () => {
 	const { IdeEditor } = await import("../extensions/ide.ts");
-	const keybindings = { matches: () => false, getKeys: () => [] };
+	const keybindings = { matches: (d: string, k: string) => k === "app.interrupt" && d === "\x1b", getKeys: () => [] };
 	const id = (s: string) => s;
 	const theme = { borderColor: id, selectList: { selectedPrefix: id, selectedText: id, description: id, scrollInfo: id, noMatch: id } };
 	const tui = { requestRender() {}, terminal: { rows: 40, columns: 80 } };
-	let chip: string | undefined = "⧉ 3 lines selected";
-	const ed = new IdeEditor(tui as any, theme as any, keybindings as any, () => chip);
+	let chip: { text: string; dim: boolean } | undefined = { text: "⧉ 3 lines selected", dim: false };
+	let dismissed = 0;
+	const ed = new IdeEditor(tui as any, theme as any, keybindings as any, () => chip, () => dismissed++);
 	const top = () => ed.render(40)[0]!.replace(/\x1b\[[0-9;]*m/g, "");
 	assert.equal(top(), `── ⧉ 3 lines selected ${"─".repeat(40 - 2 - 20)}`);
+
+	ed.handleInput("\x1b");
+	assert.equal(dismissed, 1); // idle + attachable chip: Esc dismisses
+	chip = { text: "⧉ 3 lines selected", dim: true };
+	ed.handleInput("\x1b");
+	assert.equal(dismissed, 1); // already dim: Esc falls through
+
+	chip = { text: "⧉ 3 lines selected", dim: false };
 	ed.setWorkingStatusIndicator({ renderInBorder: () => "", renderSpinnerInBorder: () => "" } as any);
 	assert.equal(top(), "─".repeat(40)); // busy: default border
+	ed.handleInput("\x1b");
+	assert.equal(dismissed, 1); // busy: Esc keeps interrupting
 	ed.setWorkingStatusIndicator(undefined);
 	chip = undefined;
 	assert.equal(top(), "─".repeat(40));
+});
+
+test("diagnostics: diff against baseline and Claude Code-style listing", () => {
+	const d = (message: string, line: number, severity = "Error") => ({ message, severity, source: "ts", code: 2322, range: { start: { line, character: 4 }, end: { line, character: 9 } } });
+	const before = [d("old", 1)];
+	const now = [d("old", 1), d("new one", 9), d("warn", 2, "Warning")];
+	assert.deepEqual(newDiagnostics(before, now).map((x) => x.message), ["new one", "warn"]);
+	assert.deepEqual(newDiagnostics(now, now), []);
+
+	const text = formatDiagnostics([{ uri: "file:///p/src/a.ts", diagnostics: newDiagnostics(before, now) }, { uri: "file:///p/b.ts", diagnostics: [] }], "/p");
+	assert.equal(text, "src/a.ts:\n  ✗ [Line 10:5] new one [2322] (ts)\n  ⚠ [Line 3:5] warn [2322] (ts)");
+	assert.match(formatDiagnostics([{ uri: "file:///p/a.ts", diagnostics: [d("x".repeat(50), 0)] }], "/p", 30), /…\[truncated\]$/);
+
+	assert.deepEqual(parseDiagnostics({ content: [{ type: "text", text: JSON.stringify([{ uri: "file:///a", diagnostics: [] }]) }] }), [{ uri: "file:///a", diagnostics: [] }]);
+	assert.deepEqual(parseDiagnostics({ content: [{ type: "text", text: "Timeout getting diagnostics" }] }), []); // JetBrains
+	assert.equal(uriToPath("file:///p/a%20b.ts"), "/p/a b.ts");
+});
+
+test("ancestorPids: includes our parent chain", () => {
+	const a = ancestorPids(process.pid);
+	assert.ok(a.has(process.pid) && a.has(process.ppid));
 });

@@ -1,0 +1,40 @@
+---
+# Publish to npm when a `v*` tag is pushed:
+#   npm version patch && git push --follow-tags
+# Token-less npm trusted publishing (GitHub OIDC); provenance is automatic.
+# One-time setup: npmjs.com > pi-ide > Settings > Trusted Publisher >
+#   GitHub Actions: user zhengziyi0117, repo pi-ide, workflow publish.yml
+name: Publish
+
+"on":
+  push:
+    tags: ["v*"]
+
+permissions:
+  id-token: write  # OIDC for npm trusted publishing
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      # v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false  # release job: no shared cache
+      # Trusted publishing needs npm >= 11.5.1; Node 24 may bundle older.
+      - run: npm install -g npm@11.20.0
+      - run: npm install --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+      - name: Tag matches package.json
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          test "v$version" = "$GITHUB_REF_NAME"
+      - run: npm publish --access public
