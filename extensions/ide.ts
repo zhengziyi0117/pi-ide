@@ -373,7 +373,7 @@ export default function (pi: ExtensionAPI) {
 	const chip = (): Chip | undefined => {
 		if (!ws || !lock) return undefined;
 		const f = selInfo();
-		if (!f || (!f.hasText && !settings.attachOpenFile)) return { text: `⧉ ${lock.ideName}`, dim: true };
+		if (!f || f.key === dismissed || (!f.hasText && !settings.attachOpenFile)) return { text: `⧉ ${lock.ideName}`, dim: true };
 		return { text: f.chip, dim: !attachable() };
 	};
 
