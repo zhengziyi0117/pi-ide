@@ -1,6 +1,6 @@
 {
   "name": "pi-ide",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "pi extension: read IDE selection like Claude Code, via the Claude Code IDE plugin (VS Code / Cursor / JetBrains)",
   "keywords": [
     "pi-package",
