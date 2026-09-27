@@ -71,14 +71,12 @@ test("formatSelection: 1-based range, CC wording, relative path", () => {
 
 	const one = formatSelection({ filePath: "/p/a.ts", text: "foo", selection: { start: { line: 0, character: 2 }, end: { line: 0, character: 5 } } }, "/p");
 	assert.equal(one.chip, "⧉ 1 line selected");
-	assert.notEqual(one.key, f.key);
 });
 
 test("formatSelection: empty selection -> opened file; outside cwd keeps absolute path", () => {
 	const f = formatSelection({ filePath: "/elsewhere/b.ts", text: "", selection: { start: { line: 3, character: 1 }, end: { line: 3, character: 1 }, isEmpty: true } }, "/p");
 	assert.equal(f.content, "The user opened the file /elsewhere/b.ts in the IDE. This may or may not be related to the current task.");
 	assert.equal(f.chip, "⧉ In b.ts");
-	assert.equal(f.key, "/elsewhere/b.ts");
 
 	// JetBrains sends no isEmpty; empty text means just the open file.
 	const jb = formatSelection({ filePath: "/p/c.kt", text: "", selection: { start: { line: 2, character: 0 }, end: { line: 2, character: 0 } } }, "/p");

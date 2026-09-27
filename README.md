@@ -3,7 +3,7 @@
 Claude Code 式的 IDE 集成，给 [pi](https://github.com/earendil-works/pi) 用。直接复用 Claude Code 的 IDE 插件，不用再装别的 IDE 扩展。
 
 - 输入框上边框最左侧实时显示选区：`⧉ 12 lines selected` / `⧉ In foo.ts` / `⧉ IntelliJ IDEA`。agent 运行时这里显示 pi 自己的运行状态。
-- 发消息时自动附带选区，文案和 Claude Code 一致。选区没变就不重复附带；按 Esc 可以跳过当前选区（提示变暗），选区改变后恢复。
+- 发消息时自动附带选区，文案和 Claude Code 一致。发过一次，或按 Esc 跳过后，提示变回 `⧉ IDE 名称`；在 IDE 里再动一下光标或选区（包括重新点当前文件）就恢复，并在下条消息里附带。
 - 改完文件后，把 IDE 里新出现的报错附给模型，并提供 `ide_diagnostics` 工具。
 - 在 IDE 里按 `cmd+alt+K`（Claude Code 的 "Insert At-Mention"），pi 输入框里会插入 `@path#L5-10`。
 - `/ide`：列出 IDE 窗口，可以切换或断开；也能切换“没选中时是否附带当前打开的文件”，设置保存在 `~/.pi/agent/pi-ide.json`。

@@ -144,12 +144,11 @@ function lineRange(sel: Selection): [number, number] | undefined {
 export function formatSelection(
 	sel: Selection,
 	cwd: string,
-): { key: string; content: string; summary: string; chip: string; hasText: boolean } {
+): { content: string; summary: string; chip: string; hasText: boolean } {
 	const file = displayPath(sel.filePath, cwd);
 	const range = lineRange(sel);
 	if (!range || !sel.text) {
 		return {
-			key: sel.filePath,
 			content: `The user opened the file ${file} in the IDE. This may or may not be related to the current task.`,
 			summary: `Opened ${file}`,
 			chip: `⧉ In ${basename(sel.filePath)}`,
@@ -161,7 +160,6 @@ export function formatSelection(
 	const text = all.length > MAX_LINES ? `${all.slice(0, MAX_LINES).join("\n")}\n... (truncated, ${all.length - MAX_LINES} more lines)` : sel.text;
 	const n = b - a + 1;
 	return {
-		key: `${sel.filePath}:${a}-${b}:${sel.text.length}`,
 		content: `The user selected the lines ${a} to ${b} from ${file}:\n${text}\n\nThis may or may not be related to the current task.`,
 		summary: `Selected lines ${a}-${b} from ${file}`,
 		chip: `⧉ ${n} line${n === 1 ? "" : "s"} selected`,
@@ -265,7 +263,7 @@ function loadSettings(): Settings {
 
 export interface Chip {
 	text: string;
-	/** Won't be attached (dismissed, or open-file attaching is off). */
+	/** Won't be attached (nothing to attach, or open-file attaching is off). */
 	dim: boolean;
 }
 
@@ -323,8 +321,8 @@ export default function (pi: ExtensionAPI) {
 	let nextId = 1;
 	const pending = new Map<number, Pending>();
 	let latest: Selection | undefined;
-	let lastInjected: string | undefined;
-	let dismissed: string | undefined;
+	// The exact selection event that was sent or skipped with Esc; any new selection_changed shows the chip again.
+	let handled: Selection | undefined;
 	let ctx: ExtensionContext | undefined;
 	let tui: TUI | undefined;
 	let inEditor = false;
@@ -363,18 +361,18 @@ export default function (pi: ExtensionAPI) {
 
 	const selInfo = () => (latest && ctx ? formatSelection(latest, ctx.cwd) : undefined);
 
-	/** What would be attached to the next prompt, if anything. */
+	/** What would be attached to the next prompt, if anything (not already sent or skipped). */
 	const attachable = () => {
 		const f = selInfo();
-		if (!ws || !f || f.key === dismissed || (!f.hasText && !settings.attachOpenFile)) return undefined;
+		if (!ws || !f || latest === handled || (!f.hasText && !settings.attachOpenFile)) return undefined;
 		return f;
 	};
 
 	const chip = (): Chip | undefined => {
 		if (!ws || !lock) return undefined;
-		const f = selInfo();
-		if (!f || f.key === dismissed || (!f.hasText && !settings.attachOpenFile)) return { text: `⧉ ${lock.ideName}`, dim: true };
-		return { text: f.chip, dim: !attachable() };
+		// Show the selection only when it will be attached; otherwise (none, sent, skipped) just the IDE name.
+		const f = attachable();
+		return f ? { text: f.chip, dim: false } : { text: `⧉ ${lock.ideName}`, dim: true };
 	};
 
 	const refresh = () => {
@@ -494,7 +492,8 @@ export default function (pi: ExtensionAPI) {
 			} else if (msg.id !== undefined) {
 				send({ id: msg.id, result: {} }); // server requests, e.g. JetBrains ping
 			} else if (msg.method === "selection_changed" && msg.params?.filePath) {
-				latest = msg.params;
+				// Keep the same object on duplicate events so they don't bring back a sent/skipped selection.
+				if (JSON.stringify(msg.params) !== JSON.stringify(latest)) latest = msg.params;
 				refresh();
 			} else if (msg.method === "at_mentioned" && msg.params?.filePath && ctx) {
 				ctx.ui.pasteToEditor(mentionText(msg.params, ctx.cwd));
@@ -620,8 +619,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", (_e, c) => {
 		ctx = c;
-		lastInjected = undefined;
-		dismissed = undefined;
+		handled = undefined;
 		settings = loadSettings();
 		setToolActive(false);
 		if (!c.hasUI) return;
@@ -630,7 +628,7 @@ export default function (pi: ExtensionAPI) {
 			c.ui.setEditorComponent((t, theme, kb) => {
 				tui = t;
 				return new IdeEditor(t, theme, kb, chip, () => {
-					dismissed = selInfo()?.key;
+					handled = latest;
 					refresh();
 				});
 			});
@@ -653,8 +651,9 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", () => {
 		const f = attachable();
-		if (!f || f.key === lastInjected) return;
-		lastInjected = f.key;
+		if (!f) return;
+		handled = latest;
+		refresh(); // chip falls back to the IDE name until the selection changes
 		return { message: { customType: CUSTOM_TYPE, content: f.content, display: true, details: { summary: f.summary } } };
 	});
 
